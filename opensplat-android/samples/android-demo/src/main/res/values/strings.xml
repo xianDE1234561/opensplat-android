@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenSplat</string>
+
+    <!-- Navigation -->
+    <string name="tab_capture">Capture</string>
+    <string name="tab_reconstruction">Reconstruction</string>
+    <string name="tab_library">Lib</string>
+    <string name="tab_viewer">Viewer</string>
+    <string name="tab_samples">Samples</string>
+
+    <!-- Samples screen -->
+    <string name="samples_title">Samples</string>
+    <string name="samples_feature_count">%d feature demos</string>
+    <string name="samples_badge_live">LIVE</string>
+    <string name="samples_badge_soon">SOON</string>
+    <string name="samples_back">Back</string>
+    <string name="samples_back_about">About</string>
+    <string name="samples_chip_preview">Preview</string>
+    <string name="samples_chip_soon">Soon</string>
+    <string name="samples_footer_version">OpenSplat v%s</string>
+    <string name="samples_footer_repo">github.com/SuleMareVientu/opensplat-android</string>
+
+    <!-- Sample categories -->
+    <string name="category_3d_basics">3D Basics</string>
+    <string name="category_content">Content</string>
+    <string name="category_augmented_reality">Augmented Reality</string>
+
+    <!-- Demo placeholder -->
+    <string name="demo_coming_soon">Coming soon</string>
+
+    <!-- Demo settings & controls -->
+    <string name="demo_settings_title">Settings</string>
+    <string name="demo_settings_open">Open demo settings</string>
+    <string name="demo_settings_fab_cd">Demo settings</string>
+    <string name="demo_settings_reset">Reset</string>
+    <string name="demo_settings_reset_cd">Reset demo settings to defaults</string>
+    <string name="demo_reset_cd">Reset this demo to its initial state</string>
+    <string name="demo_reset_done">Demo reset — ready to try again</string>
+
+    <!-- Error states -->
+    <string name="ar_not_available">AR is not available on this device</string>
+    <string name="ar_not_installed">Google Play Services for AR is not installed</string>
+    <string name="ar_camera_permission">Camera permission is required for AR</string>
+    <string name="ar_grant_permission">Grant Camera Permission</string>
+    <string name="model_loading">Loading model…</string>
+    <string name="model_loading_error">Failed to load model</string>
+    <string name="scene_error">Something went wrong rendering the scene</string>
+
+    <!-- Accessibility -->
+    <string name="cd_3d_scene">3D scene viewport</string>
+    <string name="cd_ar_scene">Augmented reality viewport</string>
+    <string name="cd_loading_model">Loading model, please wait</string>
+    <string name="cd_back_button">Navigate back</string>
+
+    <!-- In-app bug report -->
+    <string name="feedback_button">Feedback</string>
+    <string name="feedback_action_cd">Send feedback</string>
+    <string name="feedback_cd_close">Close</string>
+    <string name="feedback_report_title">Report a bug</string>
+    <string name="feedback_report_body">The report bundles your device info, the app\'s recent log, and an optional screenshot. Nothing leaves your device until you choose where to send it.</string>
+    <string name="feedback_report_screenshot_include">Include screenshot</string>
+    <string name="feedback_report_screenshot_cd">Screenshot preview</string>
+    <string name="feedback_report_screenshot_unavailable">Screenshot couldn\'t be captured — the report will be text-only.</string>
+    <string name="feedback_report_screenshot_may_be_black">On this device the 3D viewport may appear black in the capture.</string>
+    <string name="feedback_report_screenshot_share_only">The screenshot is attached when you share — the GitHub link can\'t carry an image.</string>
+    <string name="feedback_report_note_label">Describe the issue (optional)</string>
+    <string name="feedback_report_note_placeholder">What happened? What did you expect?</string>
+    <string name="feedback_report_privacy">Sent only through the app you pick — no account, no upload, no recording.</string>
+    <string name="feedback_report_share">Share report</string>
+    <string name="feedback_report_open_github">Open a GitHub issue</string>
+    <string name="feedback_report_share_chooser">Share bug report</string>
+    <string name="feedback_report_no_app">No app available to send the report</string>
+
+    <!-- Library Screen -->
+    <string name="library_title">Library</string>
+    <string name="library_tab_scans">Scans &amp; Captures</string>
+    <string name="library_tab_splats">Models</string>
+    <string name="library_storage_folder">Storage: %s</string>
+    <string name="library_change_folder">Change Folder</string>
+    <string name="library_reset_folder">Reset to Default</string>
+    <string name="library_no_scans">No scans found yet. Start by capturing an AR scene!</string>
+    <string name="library_no_splats">No saved models yet. Create one in Reconstruction or open a local file in Viewer.</string>
+    <string name="library_scan_frames">%d frames</string>
+    <string name="library_scan_points">%d points</string>
+    <string name="library_scan_train">Reconstruct</string>
+    <string name="library_scan_rename">Rename</string>
+    <string name="library_scan_delete">Delete</string>
+    <string name="library_scan_share">Share</string>
+    <string name="library_delete_confirm_title">Delete Scan?</string>
+    <string name="library_delete_confirm_msg">Are you sure you want to delete \"%s\"? This cannot be undone.</string>
+    <string name="library_delete_splat_confirm_title">Delete Trained Splat?</string>
+    <string name="library_delete_splat_confirm_msg">Are you sure you want to delete \"%s\" from app data?</string>
+    <string name="library_rename_title">Rename Scan</string>
+    <string name="library_rename_hint">Enter new project name</string>
+    <string name="library_action_cancel">Cancel</string>
+    <string name="library_action_rename">Rename</string>
+    <string name="library_action_delete">Delete</string>
+    <string name="library_splat_export">Export</string>
+    <string name="library_splat_view">View</string>
+    <string name="library_splat_iterations">%d iterations</string>
+    <string name="library_splat_metrics">PSNR: %1$.1fdB • SSIM: %2$.3f</string>
+
+    <!-- Interoperability & Capture Save -->
+    <string name="capture_save_title">Save Capture</string>
+    <string name="capture_name_label">Project Name</string>
+    <string name="capture_save_action">Save Capture</string>
+    <string name="capture_send_to_training">Send to Training</string>
+    <string name="capture_saved_success">Capture saved to %s</string>
+    <string name="training_select_from_captures">Select from Captures</string>
+    <string name="training_choose_capture_title">Choose Capture Project</string>
+    <string name="training_no_captures_available">No captures found. Complete a capture first!</string>
+
+    <!-- Training Tabs & Server Integration -->
+    <string name="training_tab_local">Local</string>
+    <string name="training_tab_server">Server</string>
+    <string name="server_url_label">Server URL</string>
+    <string name="server_connect_test">Test</string>
+    <string name="server_status_checking">Connecting...</string>
+    <string name="server_status_online">Online</string>
+    <string name="server_status_offline">Offline</string>
+    <string name="server_lan_hint">Self-hosted server: ensure phone and PC are on the same Wi-Fi and port 8000 is open in your desktop firewall.</string>
+    <string name="server_upload_source">Upload Source</string>
+    <string name="server_upload_video">Upload MP4 Video</string>
+    <string name="server_upload_dataset">Upload Capture ZIP</string>
+    <string name="server_start_training">Start Training</string>
+    <string name="server_stop_job">Stop</string>
+    <string name="server_delete_job">Delete</string>
+    <string name="server_download_model">Download Model</string>
+    <string name="server_save_to_library">Save to Library</string>
+    <string name="server_export_file">Export File</string>
+    <string name="server_jobs_title">Server Jobs</string>
+    <string name="server_job_logs">Console Logs</string>
+</resources>
+

@@ -22,3 +22,7 @@ dist/
 /runs/**/*.bin
 /runs/**/*.db
 /runs/**/*.log
+
+# Android model generation inputs
+/vendor/
+/*.safetensors

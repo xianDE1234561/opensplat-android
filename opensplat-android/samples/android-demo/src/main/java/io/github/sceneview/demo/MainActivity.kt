@@ -1,0 +1,335 @@
+package io.github.sceneview.demo
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import io.github.sceneview.demo.fragments.GeneratedDemos
+import io.github.sceneview.demo.theme.SceneViewDemoTheme
+import io.github.sceneview.demo.ui.RootScreen
+import io.github.sceneview.sample.common.update.InAppUpdateManager
+import io.github.sceneview.sample.common.update.UpdateBanner
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.compose.ui.platform.LocalContext
+import io.github.sceneview.demo.feedback.BugReportSheet
+import io.github.sceneview.demo.feedback.FeedbackOpenRequest
+import io.github.sceneview.demo.feedback.PendingBugReport
+import io.github.sceneview.demo.feedback.captureBugReportInfo
+import io.github.sceneview.demo.feedback.captureBugReportScreenshot
+import io.github.sceneview.demo.feedback.sweepStaleFeedbackMedia
+
+class MainActivity : ComponentActivity() {
+
+    // Exposed (internal) so SceneViewDemoApp can hand the manager to UpdateBanner —
+    // the composable renders the demo-native update-available / downloading /
+    // ready-to-restart chrome.
+    internal lateinit var updateManager: InAppUpdateManager
+
+    /**
+     * Latest demo id parsed from a deep-link intent (`sceneview://demo/<id>`
+     * today, `https://sceneview.github.io/open?demo=<id>` once App-Links
+     * verification ships). Updated from both `onCreate` (cold start) and
+     * [onNewIntent] (warm start with the activity already in the
+     * background). The Compose UI observes this and navigates when it
+     * sees a non-null value, then resets it via [consumePendingDemo] so
+     * a configuration change doesn't replay the same navigation.
+     */
+    private val pendingDemoId = MutableStateFlow<String?>(null)
+    val pendingDemoIdFlow: StateFlow<String?> get() = pendingDemoId.asStateFlow()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        // Clean up any feedback recording stranded in the cache by a prior run.
+        sweepStaleFeedbackMedia(this)
+        updateManager = InAppUpdateManager(this)
+        // Register the activity-result launcher for Google's FLEXIBLE consent
+        // modal BEFORE the activity reaches STARTED. Cancelling that modal is
+        // delivered here (RESULT_CANCELED) — without it a cancel would strand
+        // the in-app Update button as a permanent no-op (#1942 review).
+        updateManager.registerForResult(this)
+        // Two ingress channels: (1) `--es demo <id>` from `adb shell am` for QA / instrumented
+        // tests, (2) URL deep-links via the public sceneview://demo/<id> scheme parsed by
+        // DeepLinkRouter. The QA channel takes precedence so a tester running adb against a
+        // running app can deterministically navigate without competing with a stale URL intent.
+        // Same allow-list (ALL_DEMOS) gates both ingress channels — without it
+        // any app could call `am start ... --es demo whatever` and steer
+        // navigation through PlaceholderDemo. See #958.
+        pendingDemoId.value = DeepLinkRouter.validate(intent?.getStringExtra("demo"))
+            ?: DeepLinkRouter.parse(intent?.data)
+        // QA mode ingress: `--ez qa_mode true` freezes auto-rotation / orbit / animations
+        // so screenshot tests get a deterministic frame. Same setting reachable via the
+        // long-press gesture on the demo title bar (see DemoScaffold). Off by default.
+        // QA-mode tracks the latest intent, not "stickily true forever" — otherwise any
+        // app on the device could flip it on once via `--ez qa_mode true` and leave the
+        // showcase frozen until process death.
+        DemoSettings.qaMode = intent?.getBooleanExtra("qa_mode", false) ?: false
+        DemoSettings.cameraDistance = resolveCameraDistance(intent)
+        setContent {
+            SceneViewDemoTheme {
+                SceneViewDemoApp(activity = this)
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Replace the activity intent so subsequent re-creations see the new
+        // deep link, not the original launcher intent.
+        setIntent(intent)
+        // Same dual-ingress policy as onCreate — `--es demo` first, URL second.
+        // Both go through DeepLinkRouter.validate / .parse so unknown ids are
+        // dropped rather than routed to PlaceholderDemo. See #958.
+        pendingDemoId.value = DeepLinkRouter.validate(intent.getStringExtra("demo"))
+            ?: DeepLinkRouter.parse(intent.data)
+        DemoSettings.qaMode = intent.getBooleanExtra("qa_mode", false)
+        DemoSettings.cameraDistance = resolveCameraDistance(intent)
+    }
+
+
+    /**
+     * Resolves the optional camera-to-model distance (zoom level) from an incoming intent.
+     *
+     * Two ingress channels, mirroring the `demo` extra's dual-channel policy:
+     *  1. The `camera_distance` intent extra — used by the Maestro device-QA flows and
+     *     `adb shell am`. Takes precedence. The extra's Bundle type depends on the
+     *     sender — `adb --ef` delivers a `Float`, but Maestro's `launchApp` delivers
+     *     env-interpolated values as `String` extras (and could deliver a bare YAML
+     *     number as `Integer`/`Double`) — so the raw value is read type-agnostically and
+     *     coerced by [DeepLinkRouter.coerceCameraDistanceExtra]. Reading only
+     *     `getFloatExtra` here silently ignored Maestro's zoom parameter (#2652).
+     *  2. `?cameraDistance=<f>` query parameter on a `sceneview://demo/<id>` URL deep link.
+     *
+     * Both are clamped by [DeepLinkRouter.coerceCameraDistanceExtra] /
+     * [DeepLinkRouter.parseCameraDistance] to a finite, in-range value; anything absent,
+     * unparseable, of an unsupported type, or out of range resolves to `null` so the
+     * launched demo keeps its own auto-fit framing and never crashes.
+     */
+    private fun resolveCameraDistance(intent: Intent?): Float? {
+        if (intent == null) return null
+        // Bundle.get is deprecated in favour of the typed getters, but "which type did
+        // the sender use?" is exactly the unknown being resolved here — the typed
+        // getters would each silently drop the other senders' encodings.
+        @Suppress("DEPRECATION")
+        val fromExtra = DeepLinkRouter.coerceCameraDistanceExtra(
+            intent.extras?.get("camera_distance"),
+        )
+        return fromExtra ?: DeepLinkRouter.parseCameraDistance(intent.data)
+    }
+
+    fun consumePendingDemo() {
+        pendingDemoId.value = null
+    }
+
+
+    override fun onResume() {
+        super.onResume()
+        // Two phases (#890): handle a partially-downloaded update from a prior session,
+        // then proactively check the Play Console for a newer release. Called from
+        // onResume (not onCreate) so a backgrounded-then-resumed app re-checks.
+        // checkForUpdate() only surfaces the AVAILABLE state — it never pops the
+        // Google consent modal; that happens solely on the user's deliberate tap of
+        // the in-app "Update" button rendered by UpdateBanner below (#1941).
+        updateManager.checkForStalledUpdate()
+        updateManager.checkForUpdate()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        updateManager.destroy()
+    }
+}
+
+@Composable
+fun SceneViewDemoApp(activity: MainActivity? = null) {
+    val navController = rememberNavController()
+
+    // Watch for deep-link intents. On a non-null id we either navigate
+    // directly (the demo list is the start destination, so navigate adds
+    // the demo screen on top — back returns to the list) and immediately
+    // consume the pending id so a config change doesn't replay it.
+    val pendingId by (activity?.pendingDemoIdFlow?.collectAsState()
+        ?: remember { MutableStateFlow<String?>(null) }.collectAsState())
+    // Capture the launch-time deep-link id ONCE, so NavHost picks the right
+    // start destination on first composition. The LaunchedEffect below still
+    // handles subsequent intents (onNewIntent → pendingDemoIdFlow updates).
+    val initialDemo = remember { activity?.pendingDemoIdFlow?.value }
+    LaunchedEffect(pendingId) {
+        val id = pendingId ?: return@LaunchedEffect
+        // If the cold-start `initialDemo` already matches `pendingId`, NavHost picked the
+        // demo as its start destination — navigating here would push a SECOND instance,
+        // destroying the first one's remember{} state. Just clear
+        // the pending id so config changes don't replay it.
+        if (id != initialDemo) {
+            navController.navigate("demo/$id")
+        }
+        activity?.consumePendingDemo()
+    }
+
+    // Wrap the NavHost and the in-app update banner in an explicit Box so the
+    // banner is z-ordered ON TOP of every screen (#1425). Previously the banner
+    // and the NavHost were sibling root composables — the demo screens' own
+    // TopAppBar then drew over the banner, clipping the "Update ready / Restart"
+    // chrome. Drawing the banner last in the Box guarantees it stays visible.
+    Box(modifier = Modifier.fillMaxSize()) {
+        NavHost(
+            navController = navController,
+            startDestination = if (initialDemo != null) "demo/$initialDemo" else "list",
+            enterTransition = { slideInHorizontally(initialOffsetX = { it }) + fadeIn() },
+            exitTransition = { slideOutHorizontally(targetOffsetX = { -it / 4 }) + fadeOut() },
+            popEnterTransition = { slideInHorizontally(initialOffsetX = { -it / 4 }) + fadeIn() },
+            popExitTransition = { slideOutHorizontally(targetOffsetX = { it }) + fadeOut() }
+        ) {
+            composable("list") { RootScreen() }
+            composable("demo/{id}") { backStackEntry ->
+                val id = backStackEntry.arguments?.getString("id") ?: return@composable
+                val onBack: () -> Unit = { navController.popBackStack() }
+                DemoRouter(id = id, onBack = onBack)
+            }
+        }
+
+        // The update banner is a no-op when state is IDLE / CHECKING /
+        // UP_TO_DATE — it renders the demo-native AVAILABLE / DOWNLOADING /
+        // READY_TO_INSTALL chrome so the whole flexible-update flow stays inside
+        // the app's own UI (#890, #1941). The status-bar inset keeps it clear of
+        // the system bar so the banner is never clipped behind the status bar or
+        // a demo's top app bar (#1425).
+        activity?.updateManager?.let { mgr ->
+            UpdateBanner(
+                updateManager = mgr,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.statusBars),
+            )
+        }
+
+        val context = LocalContext.current
+        val currentEntry by navController.currentBackStackEntryAsState()
+
+        // The pending report (metadata + logcat + screenshot), captured the
+        // moment the user asks to report — BEFORE the sheet is composed, so
+        // the sheet itself is never in the screenshot. Not rememberSaveable:
+        // a Bitmap can't ride a config change; the sheet simply closes, and
+        // re-opening re-captures in <100 ms.
+        var bugReport by remember { mutableStateOf<PendingBugReport?>(null) }
+        val reportScope = rememberCoroutineScope()
+
+        fun openBugReport() {
+            if (bugReport != null) return
+            // Capture the demo id NOW (the sheet host is the only place that
+            // can see the NavController), so the report names the exact demo
+            // the bug is in (#1934).
+            val demoId = currentEntry
+                ?.takeIf { it.destination.route == "demo/{id}" }
+                ?.arguments?.getString("id")
+            reportScope.launch {
+                val screenshot = activity?.let { captureBugReportScreenshot(it) }
+                bugReport = PendingBugReport(
+                    info = captureBugReportInfo(context, demoId),
+                    screenshot = screenshot,
+                )
+            }
+        }
+
+        // A demo screen's top-app-bar feedback action raises this flag — open
+        // the shared sheet and consume the request (#1930).
+        val feedbackRequested by FeedbackOpenRequest.requested.collectAsState()
+        LaunchedEffect(feedbackRequested) {
+            if (feedbackRequested) {
+                FeedbackOpenRequest.consume()
+                openBugReport()
+            }
+        }
+
+        bugReport?.let { report ->
+            BugReportSheet(
+                report = report,
+                // The screenshot PNG is deliberately NOT deleted here: a share
+                // target (e.g. Gmail) may read the FileProvider URI lazily,
+                // after the sheet is gone. The app-start sweep
+                // (sweepStaleFeedbackMedia) reclaims the few-hundred-KB file
+                // on the next launch instead.
+                onDismiss = { bugReport = null },
+            )
+        }
+    }
+}
+
+/**
+ * Routes a demo [id] to the corresponding composable.
+ *
+ * Both ingress channels ([MainActivity.onCreate] deep-links and the `--es demo`
+ * QA extra) validate against [ALL_DEMOS] via [DeepLinkRouter] before an id ever
+ * reaches here — so a missing branch is unreachable in a correct build. The
+ * fallback to [PlaceholderDemo] is kept as a registry/router drift guard: a
+ * debug build crashes loudly if [ALL_DEMOS] ships an id that has no matching
+ * fragment, while a release build degrades gracefully rather than crashing a
+ * shipped app.
+ *
+ * The actual routing table is generated by the
+ * `samples/android-demo/scripts/collate-demos.sh` collator from the per-demo
+ * fragments under `io.github.sceneview.demo.fragments` (#1797). Adding a demo
+ * does NOT require touching this file.
+ */
+@Composable
+fun DemoRouter(id: String, onBack: () -> Unit) {
+    val matched = GeneratedDemos.Screen(id = id, onBack = onBack)
+    if (!matched) {
+        check(!BuildConfig.DEBUG) {
+            "DemoRouter has no fragment for demo id '$id'. Every ALL_DEMOS entry " +
+                "must be backed by a *Fragment.kt under io.github.sceneview.demo.fragments — " +
+                "add one and run samples/android-demo/scripts/collate-demos.sh."
+        }
+        PlaceholderDemo(id = id, onBack = onBack)
+    }
+}
+
+@Composable
+fun PlaceholderDemo(id: String, onBack: () -> Unit) {
+    val entry = ALL_DEMOS.find { it.id == id }
+    DemoScaffold(
+        title = entry?.titleRes?.let { stringResource(it) } ?: id,
+        onBack = onBack
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = stringResource(R.string.demo_coming_soon),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}

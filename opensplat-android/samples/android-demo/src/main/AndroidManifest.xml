@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- AR is optional — app works without it -->
+    <uses-feature
+        android:name="android.hardware.camera.ar"
+        android:required="false" />
+
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required by `SceneViewHaptic` (rememberHapticFeedback) — the sceneview
+         library deliberately doesn't auto-merge this permission, the demo app
+         opts in so the controls sheet, AR placement confirmations, and shutter
+         button can vibrate (#1901 phase 1). When absent, every haptic call
+         becomes a silent no-op + one Log.d. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Required for PermissionImpliesUnsupportedChromeOsHardware lint rule -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+    <!-- In-app bug reporting deliberately needs NO permission (#2120/#2188).
+         The former MediaProjection screen-recording feedback system (RECORD_AUDIO
+         + FOREGROUND_SERVICE + FOREGROUND_SERVICE_MEDIA_PROJECTION +
+         POST_NOTIFICATIONS) was removed: the rebuilt reporter uses PixelCopy on
+         the app's own window, the app's own logcat tail, and a user-driven share
+         intent — zero foreground service, zero Play Console FGS declaration. -->
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:enableOnBackInvokedCallback="true"
+        android:fullBackupContent="@xml/backup_descriptor"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SceneViewDemo"
+        android:usesCleartextTraffic="true">
+
+        <!-- ARCore metadata — optional -->
+        <meta-data
+            android:name="com.google.ar.core"
+            android:value="optional" />
+
+        <!-- FileProvider — surfaces cache files (feedback screenshots)
+             as content:// URIs for ACTION_SEND share intents. The authority
+             is namespaced with `.fileprovider` so it never collides with
+             other modules' providers. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|uiMode"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+                Deep-link entry: scan a QR code on sceneview.github.io / README /
+                docs and land directly on the matching demo screen.
+                See website-static/.well-known/README.md for the verification
+                state and follow-up steps.
+            -->
+
+            <!-- Custom scheme — works on every install, no verification needed. -->
+            <intent-filter android:label="Open in SceneView">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sceneview" android:host="demo" />
+            </intent-filter>
+
+            <!--
+                Verified App-Link over HTTPS — pairs with
+                `website-static/.well-known/assetlinks.json`, which lists
+                both the Play App Signing SHA-256 and the local upload key
+                so verification succeeds for Play Store installs AND for
+                local `adb install` / `assembleDebug` builds.
+                Verify on a phone via `adb shell pm get-app-links
+                io.github.sceneview.demo` (expected: "sceneview.github.io:
+                verified"); `pm verify-app-links` re-runs verification.
+            -->
+            <intent-filter android:label="Open in SceneView" android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="sceneview.github.io" android:pathPrefix="/open" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".service.SplatProcessService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+        <!--
+            Headless LocusGS forward pass, launched by adb for on-device
+            verification (see android_infer/README.md). Exported so `am start`
+            can reach it; it has no navigation entry in the app and does
+            nothing without an explicit model_dir/input_dir.
+        -->
+        <activity
+            android:name=".locusgs.LocusGSInferenceActivity"
+            android:exported="true"
+            android:theme="@style/Theme.SceneViewDemo" />
+
+        <!-- Debug entry point for the Brush warm start; see BrushTrainingActivity. -->
+        <activity
+            android:name=".locusgs.BrushTrainingActivity"
+            android:exported="true"
+            android:theme="@style/Theme.SceneViewDemo" />
+
+        <service
+            android:name=".service.SplatTrainingService"
+            android:process=":training"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+    </application>
+</manifest>

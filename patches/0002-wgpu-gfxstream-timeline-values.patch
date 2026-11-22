@@ -1,0 +1,19 @@
+Backport the semaphore value padding from https://github.com/gfx-rs/wgpu/pull/10677
+on the pinned wgpu revision de4d137a5303486913156e094ccf68491fe745af.
+Apply in the wgpu checkout used for the x86_64 emulator build, not the ARM64 build.
+
+--- a/wgpu-hal/src/vulkan/semaphore_list.rs
++++ b/wgpu-hal/src/vulkan/semaphore_list.rs
+@@ -87,6 +87,12 @@
+         assert!(matches!(signal_semaphores.mode, SemaphoreListMode::Signal));
+ 
+         let timeline_info = timeline_info.write(vk::TimelineSemaphoreSubmitInfo::default());
++
++        // Backport wgpu #10677 for testing GFXStream's Vulkan submit path.
++        if !wait_semaphores.values.is_empty() || !signal_semaphores.values.is_empty() {
++            wait_semaphores.pad_values();
++            signal_semaphores.pad_values();
++        }
+ 
+         let mut uses_timeline = false;
+ 

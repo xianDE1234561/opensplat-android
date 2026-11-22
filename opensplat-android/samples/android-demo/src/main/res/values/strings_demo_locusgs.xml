@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="demo_locusgs">LocusGS Pipeline</string>
+    <string name="demo_locusgs_subtitle">LocusGS feed-forward → Gaussian Bridge → Brush warm start, all on device</string>
+    <string name="demo_locusgs_scene">Scene directory</string>
+    <string name="demo_locusgs_pick">Choose dataset…</string>
+    <string name="demo_locusgs_select_views">Select Views</string>
+    <string name="demo_locusgs_run_forward">Run LocusGS</string>
+    <string name="demo_locusgs_start_brush">Refine with Brush</string>
+    <string name="demo_locusgs_steps">Refinement steps</string>
+    <string name="demo_locusgs_status">Status: %s</string>
+    <string name="demo_locusgs_stage_loading">Loading scene…</string>
+    <string name="demo_locusgs_stage_selecting">Selecting keyframes…</string>
+    <string name="demo_locusgs_stage_forward">Running LocusGS forward…</string>
+    <string name="demo_locusgs_stage_bridge">Bridging Gaussians…</string>
+    <string name="demo_locusgs_stage_brush">Refining on device…</string>
+    <string name="demo_locusgs_stage_done">Done</string>
+    <string name="demo_locusgs_no_scene">Choose a nerfstudio dataset directory first.</string>
+</resources>

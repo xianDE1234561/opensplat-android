@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.head.sha || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            android:
+              - '.github/**'
+              - 'gradle/**'
+              - 'build.gradle*'
+              - 'settings.gradle*'
+              - 'gradle.properties'
+              - 'gradlew'
+              - 'gradlew.bat'
+              - 'sceneview/**'
+              - 'arsceneview/**'
+              - 'sceneview-core/**'
+              - 'samples/android-demo/**'
+              - 'samples/common/**'
+
+  build:
+    name: Build libraries & samples
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-gradle
+
+      - name: Build libraries + samples
+        env:
+          ARCORE_API_KEY: ${{ secrets.ARCORE_API_KEY }}
+        run: |
+          ./gradlew \
+            assembleDebug \
+            :samples:android-demo:assembleDebug \
+            --stacktrace
+
+  lint:
+    name: Lint
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-gradle
+
+      - name: Android Lint
+        run: ./gradlew :sceneview:lintDebug :arsceneview:lintDebug --stacktrace
+
+      - name: Detekt
+        run: ./gradlew :sceneview:detekt :arsceneview:detekt :sceneview-core:detekt --stacktrace
+
+      - name: Upload detekt reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: detekt-reports
+          path: |
+            sceneview/build/reports/detekt/
+            arsceneview/build/reports/detekt/
+            sceneview-core/build/reports/detekt/
+          if-no-files-found: ignore
+
+      - name: Upload lint reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lint-reports
+          path: |
+            sceneview/build/reports/lint-results-debug.html
+            arsceneview/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+  unit-test:
+    name: Unit tests
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-gradle
+
+      - name: Unit tests
+        run: |
+          ./gradlew \
+            :sceneview:testDebugUnitTest \
+            :arsceneview:testDebugUnitTest \
+            :samples:common:testDebugUnitTest \
+            :samples:android-demo:testDebugUnitTest \
+            --stacktrace
+
+      - name: Upload unit test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-reports
+          path: |
+            sceneview/build/reports/tests/
+            arsceneview/build/reports/tests/
+            samples/common/build/reports/tests/
+            samples/android-demo/build/reports/tests/
+          if-no-files-found: ignore

@@ -1,0 +1,367 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index a6f2eb5..3fc0e0d 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -943,7 +943,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "brush-aar"
+-version = "0.3.0"
++version = "1.0.0"
+ dependencies = [
+  "android_logger",
+  "anyhow",
+diff --git a/Cargo.toml b/Cargo.toml
+index 16728a0..42ebd1f 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -151,10 +151,8 @@ split-debuginfo = "unpacked" # Keeps debug data out of the binary (massively spe
+ # This keeps your app fast if you use heavy crates like Bevy, Tokio, or Tauri
+ [profile.dev.package."*"]
+ opt-level = 3
+-
+ # No debuginfo for dependencies: they're rarely stepped into, and dropping it
+ # cuts link time and target-dir size noticeably (workspace crates keep theirs).
+-[profile.dev.package."*"]
+ debug = false
+ 
+ [profile.release]
+diff --git a/apps/brush-aar/Cargo.toml b/apps/brush-aar/Cargo.toml
+index a015994..c63d5c1 100644
+--- a/apps/brush-aar/Cargo.toml
++++ b/apps/brush-aar/Cargo.toml
+@@ -9,6 +9,9 @@ repository.workspace = true
+ name = "brush_aar"
+ crate-type = ["cdylib"]
+ 
++[features]
++emulator-vulkan = ["brush-process/emulator-vulkan"]
++
+ [dependencies]
+ # Workspace crates
+ brush-process = { path = "../../crates/brush-process" }
+diff --git a/apps/brush-aar/src/lib.rs b/apps/brush-aar/src/lib.rs
+index 7100523..d8927fe 100644
+--- a/apps/brush-aar/src/lib.rs
++++ b/apps/brush-aar/src/lib.rs
+@@ -307,6 +307,7 @@ fn run_training_engine(config: TrainingConfig, buffer: Vec<u8>, jvm: jni::JavaVM
+         train_stream_config.process_config.eval_save_to_disk = config.eval_save_to_disk;
+         train_stream_config.process_config.export_every = config.export_every;
+         train_stream_config.process_config.export_name = config.export_name.clone();
++        train_stream_config.process_config.measure_boundary_loss = true;
+ 
+         if !config.export_path.is_empty() {
+             let mut path = config.export_path.clone();
+@@ -317,13 +318,22 @@ fn run_training_engine(config: TrainingConfig, buffer: Vec<u8>, jvm: jni::JavaVM
+         }
+ 
+         // Initialize the burn backend (WGPU Setup) once per process lifetime
+-        static BURN_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+-        let _ = BURN_INIT.get_or_init(|| async {
+-            brush_process::burn_init_setup().await;
+-        }).await;
++        static BURN_INIT: tokio::sync::OnceCell<brush_process::ProcessDevice> = tokio::sync::OnceCell::const_new();
++        let device = match BURN_INIT.get_or_try_init(|| async {
++            #[cfg(all(feature = "emulator-vulkan", target_arch = "x86_64"))]
++            return brush_process::burn_init_emulator().await;
++            #[cfg(not(all(feature = "emulator-vulkan", target_arch = "x86_64")))]
++            Ok::<_, anyhow::Error>(brush_process::burn_init_setup().await)
++        }).await {
++            Ok(device) => device.clone(),
++            Err(error) => {
++                log::error!("Brush backend initialization failed: {error:#}");
++                return;
++            }
++        };
+ 
+         // Create the process
+-        let process = brush_process::create_process(source, async move |_init| {
++        let process = brush_process::create_process_with_device(source, device, async move |_init| {
+             Some(train_stream_config)
+         });
+ 
+diff --git a/crates/brush-process/Cargo.toml b/crates/brush-process/Cargo.toml
+index 5a7f74b..8323c57 100644
+--- a/crates/brush-process/Cargo.toml
++++ b/crates/brush-process/Cargo.toml
+@@ -8,6 +8,7 @@ license.workspace = true
+ 
+ [features]
+ debug-validation = ["brush-train/debug-validation"]
++emulator-vulkan = []
+ 
+ [dependencies]
+ brush-render.path = "../brush-render"
+diff --git a/crates/brush-process/src/config.rs b/crates/brush-process/src/config.rs
+index 17ac86b..14903b5 100644
+--- a/crates/brush-process/src/config.rs
++++ b/crates/brush-process/src/config.rs
+@@ -21,6 +21,10 @@ pub struct ProcessConfig {
+     /// Save the rendered eval images to disk. Uses export-path for the file location.
+     #[arg(long, help_heading = "Process options", default_value = "false")]
+     pub eval_save_to_disk: bool,
++    /// Measure the training objective on the same batch before and after optimization.
++    #[arg(long, help_heading = "Process options", default_value = "false")]
++    #[serde(default)]
++    pub measure_boundary_loss: bool,
+     /// Export every this many steps.
+     #[arg(
+         long,
+diff --git a/crates/brush-process/src/lib.rs b/crates/brush-process/src/lib.rs
+index c41b63a..a089063 100644
+--- a/crates/brush-process/src/lib.rs
++++ b/crates/brush-process/src/lib.rs
+@@ -35,11 +35,60 @@ fn burn_options() -> RuntimeOptions {
+ }
+ 
+ pub async fn burn_init_setup() -> ProcessDevice {
+-    burn_wgpu::init_setup_async::<AutoGraphicsApi>(&WgpuDevice::DefaultDevice, burn_options())
+-        .await;
++    let setup = burn_wgpu::init_setup_async::<AutoGraphicsApi>(
++        &WgpuDevice::DefaultDevice,
++        burn_options(),
++    )
++    .await;
++    log_adapter(&setup.adapter, &setup.device);
+     default_device()
+ }
+ 
++fn log_adapter(adapter: &Adapter, device: &Device) {
++    let info = adapter.get_info();
++    let limits = device.limits();
++    log::info!(
++        "Brush adapter: backend={:?} type={:?} name={:?} driver={:?} storage_buffers={} storage_binding_bytes={} workgroup_invocations={}",
++        info.backend,
++        info.device_type,
++        info.name,
++        info.driver,
++        limits.max_storage_buffers_per_shader_stage,
++        limits.max_storage_buffer_binding_size,
++        limits.max_compute_invocations_per_workgroup,
++    );
++}
++
++/// GFXStream reports conformance 0 even when compute subgroups are available.
++/// Only the explicitly built x86_64 Android test variant allows this adapter.
++#[cfg(all(feature = "emulator-vulkan", target_os = "android", target_arch = "x86_64"))]
++pub async fn burn_init_emulator() -> anyhow::Result<ProcessDevice> {
++    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
++        backends: wgpu::Backends::VULKAN,
++        flags: wgpu::InstanceFlags::default()
++            | wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER,
++        ..wgpu::InstanceDescriptor::new_without_display_handle()
++    });
++    let adapter = instance
++        .enumerate_adapters(wgpu::Backends::VULKAN)
++        .await
++        .into_iter()
++        .find(|adapter| adapter.get_info().name.starts_with("Goldfish GFXStream"))
++        .ok_or_else(|| anyhow::anyhow!("No GFXStream Vulkan adapter available"))?;
++    let features = adapter.features();
++    anyhow::ensure!(features.contains(wgpu::Features::SUBGROUP), "GFXStream Vulkan lacks compute subgroups");
++    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
++        required_features: features.difference(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS),
++        required_limits: adapter.limits(),
++        memory_hints: wgpu::MemoryHints::MemoryUsage,
++        ..Default::default()
++    }).await?;
++    log_adapter(&adapter, &device);
++    Ok(burn_wgpu::init_device(burn_wgpu::WgpuSetup {
++        instance, adapter, device, queue, backend: wgpu::Backend::Vulkan,
++    }, burn_options()).into())
++}
++
+ pub fn burn_init_device(adapter: Adapter, device: Device, queue: Queue) -> ProcessDevice {
+     let setup = burn_wgpu::WgpuSetup {
+         instance: wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle()), // unused... need to fix this in Burn.
+@@ -134,7 +183,10 @@ async fn run_process<
+     splat_view: SlotSender<Splats>,
+     device: &ProcessDevice,
+ ) -> Result<(), Error> {
+-    log::info!("Starting process with source {source:?}");
++    match &source {
++        DataSource::Buffer(bytes, name) => log::info!("Starting process with archive {name:?} ({} bytes)", bytes.len()),
++        _ => log::info!("Starting process with source {source:?}"),
++    }
+     emitter.emit(ProcessMessage::NewProcess).await;
+ 
+     let vfs = source.clone().into_vfs().await?;
+diff --git a/crates/brush-process/src/train_stream.rs b/crates/brush-process/src/train_stream.rs
+index 430c907..7dfc517 100644
+--- a/crates/brush-process/src/train_stream.rs
++++ b/crates/brush-process/src/train_stream.rs
+@@ -216,6 +216,7 @@ pub(crate) async fn train_stream(
+     let mut current_lod: u32 = 0;
+ 
+     let process_config = &train_stream_config.process_config;
++    let mut loss_batch = None;
+ 
+     log::info!("Start training loop.");
+     for iter in process_config.start_iter..train_stream_config.train_config.total_iters() {
+@@ -300,12 +301,19 @@ pub(crate) async fn train_stream(
+             );
+         }
+ 
+-        let step_time = Instant::now();
++        let mut step_time = Instant::now();
+ 
+         let batch = dataloader
+             .next_batch()
+             .instrument(trace_span!("Wait for next data batch"))
+             .await;
++        if process_config.measure_boundary_loss && iter == process_config.start_iter {
++            let measure_start = Instant::now();
++            let loss = trainer.measure_loss(&batch, splats.clone().train()).await?;
++            step_time += measure_start.elapsed();
++            log::info!("Brush objective before: iter={iter} loss={loss}");
++            loss_batch = Some(batch.clone());
++        }
+ 
+         // Lift splats onto the autodiff graph for this step, run training,
+         // then strip back to inner so the viewer slot sees plain splats.
+@@ -355,6 +363,10 @@ pub(crate) async fn train_stream(
+ 
+         let step_dur = step_time.elapsed();
+         train_duration += step_dur;
++        if is_last_step && let Some(batch) = loss_batch.take() {
++            let loss = trainer.measure_loss(&batch, splats.clone().train()).await?;
++            log::info!("Brush objective after: iter={iter} loss={loss}");
++        }
+ 
+         // Do evals. We skip this for LODs as it'd be confusing for rerun, but, could
+         // revisit this.
+diff --git a/crates/brush-train/src/train.rs b/crates/brush-train/src/train.rs
+index c9e4e3f..2658340 100644
+--- a/crates/brush-train/src/train.rs
++++ b/crates/brush-train/src/train.rs
+@@ -190,6 +190,66 @@ impl SplatTrainer {
+         self.view_cams = view_cams;
+     }
+ 
++    /// Evaluate the training objective without updating parameters, on a fixed background.
++    pub async fn measure_loss(&self, batch: &SceneBatch, splats: Splats) -> anyhow::Result<f32> {
++        let [h, w] = batch.img_size();
++        let device = splats.device().inner();
++        let background = glam::Vec3::from_slice(&self.config.background_color);
++        let pred = render_splats(splats, &batch.camera, glam::uvec2(w as u32, h as u32), background)
++            .await
++            .img;
++        let gt = Tensor::<2, Int>::from_data(batch.img_packed.clone(), &device);
++        let loss = self.image_objective(pred, gt, batch.has_alpha, batch.alpha_mode, background);
++        Ok(loss.inner().into_scalar_async::<f32>().await?)
++    }
++
++    fn image_objective(
++        &self,
++        pred_image: Tensor<3>,
++        gt_packed: Tensor<2, Int>,
++        has_alpha: bool,
++        alpha_mode: AlphaMode,
++        background: glam::Vec3,
++    ) -> Tensor<1> {
++        let masked_alpha = alpha_mode == AlphaMode::Masked;
++        let (l1_weight, ssim_weight) = if self.ssim_enabled {
++            (1.0 - self.config.ssim_weight, -self.config.ssim_weight)
++        } else {
++            (1.0, 0.0)
++        };
++        let match_alpha = has_alpha && !masked_alpha && self.config.match_alpha_weight > 0.0;
++        let composite_bg = (has_alpha && background != glam::Vec3::ZERO).then_some(background);
++        let cfg = ImageLossConfig {
++            l1_weight,
++            ssim_weight,
++            composite_bg,
++            mask: masked_alpha,
++        };
++        let pred = if match_alpha {
++            pred_image.clone()
++        } else {
++            pred_image.clone().slice(s![.., .., 0..3])
++        };
++        let map = image_loss(pred, gt_packed.clone(), cfg);
++        let loss = if match_alpha {
++            let rgb = map.clone().slice(s![.., .., 0..3]).mean();
++            let alpha = map.slice(s![.., .., 3..4]).mean();
++            rgb + alpha * self.config.match_alpha_weight
++        } else {
++            map.mean()
++        };
++        #[cfg(not(target_family = "wasm"))]
++        if let Some(lpips) = &self.lpips {
++            let gt_rgb = Tensor::from_inner(brush_loss::unpack_gt_rgb(gt_packed, composite_bg));
++            return loss
++                + lpips.lpips(
++                    pred_image.slice(s![.., .., 0..3]).unsqueeze_dim(0),
++                    gt_rgb.unsqueeze_dim(0),
++                ) * self.config.lpips_loss_weight;
++        }
++        loss
++    }
++
+     pub async fn step(&mut self, batch: SceneBatch, splats: Splats) -> (Splats, TrainStepStats) {
+         let mut splats = splats;
+ 
+@@ -237,61 +297,8 @@ impl SplatTrainer {
+             let visible = diff_out.visible;
+             let max_radius = diff_out.max_radius;
+ 
+-            // RGB loss is `(1 - w) * L1 + (-w) * SSIM` per pixel. Bg
+-            // compositing always runs in the kernel; for synthesised opaque
+-            // alpha or zero bg it's a no-op. Mask multiplies the loss-map
+-            // by `gt.a`; for synthesised opaque alpha that's a no-op too.
+-            // Alpha matching needs a real alpha source (synthesised
+-            // a = 1 would pull predicted alpha to fully opaque); we feed
+-            // `pred` with 4 channels and the kernel's `c == 3` workgroup
+-            // emits `|pred.a - gt.a|` into the alpha channel.
+-            let masked_alpha = batch.alpha_mode == AlphaMode::Masked;
+-            let (l1_w, ssim_w) = if self.ssim_enabled {
+-                (1.0 - self.config.ssim_weight, -self.config.ssim_weight)
+-            } else {
+-                (1.0, 0.0)
+-            };
+-            let do_alpha_match = has_alpha && !masked_alpha && self.config.match_alpha_weight > 0.0;
+-            // Only composite when there's a real alpha channel and a non-zero
+-            // bg to mix in; the kernel skips the per-pixel `(1-a)*bg` math
+-            // entirely when this is None.
+-            let composite_bg = (has_alpha && background != glam::Vec3::ZERO).then_some(background);
+-            let cfg = ImageLossConfig {
+-                l1_weight: l1_w,
+-                ssim_weight: ssim_w,
+-                composite_bg,
+-                mask: masked_alpha,
+-            };
+-            let pred_for_loss = if do_alpha_match {
+-                pred_image.clone()
+-            } else {
+-                pred_image.clone().slice(s![.., .., 0..3])
+-            };
+-            let loss_map = image_loss(pred_for_loss, gt_packed.clone(), cfg);
+-
+-            // `loss` is only reassigned by the LPIPS path below, which is
+-            // compiled out on wasm — so `mut` is unused there.
+-            #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+-            let mut loss = if do_alpha_match {
+-                let rgb = loss_map.clone().slice(s![.., .., 0..3]).mean();
+-                let alpha = loss_map.slice(s![.., .., 3..4]).mean();
+-                rgb + alpha * self.config.match_alpha_weight
+-            } else {
+-                loss_map.mean()
+-            };
+-
+-            // LPIPS still needs an f32 RGB tensor for VGG. Materialising it
+-            // here costs ~99 MB at 4K, only when LPIPS is enabled.
+-            #[cfg(not(target_family = "wasm"))]
+-            if let Some(lpips) = &self.lpips {
+-                let gt_rgb = brush_loss::unpack_gt_rgb(gt_packed.clone(), composite_bg);
+-                let gt_rgb_diff: Tensor<3> = Tensor::from_inner(gt_rgb);
+-                loss = loss
+-                    + lpips.lpips(
+-                        pred_image.clone().slice(s![.., .., 0..3]).unsqueeze_dim(0),
+-                        gt_rgb_diff.unsqueeze_dim(0),
+-                    ) * self.config.lpips_loss_weight;
+-            }
++            let loss =
++                self.image_objective(pred_image, gt_packed, has_alpha, batch.alpha_mode, background);
+ 
+             // Strip the autodiff graph off the loss so consumers can read the
+             // scalar later without keeping the backward pass alive.

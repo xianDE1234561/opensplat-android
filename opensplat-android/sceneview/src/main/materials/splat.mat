@@ -1,0 +1,148 @@
+// splat.mat — see CONTRIBUTING.md "Filament runtime ↔ .filamat ABI invariant"
+//
+// Draw one instanced quad per Gaussian, oriented by its projected covariance.
+// The vertex shader fetches model-space center, linear xyz scale, xyzw rotation,
+// and SH0 color/opacity from four square RGBA16F textures in painter's order.
+// Each batch adds instanceOffset to getInstanceIndex() before fetching a texel.
+// matc profile: B (lean Android — "-a opengl -p mobile", see tools/GenerateFilamat.sh).
+//
+// Rendering notes (Filament 1.71.5, no compute/SSBO → CPU painter's sort, see #2646 spike):
+//   * instanced:true + getInstanceIndex() feed one unit quad to N gaussians (cap 65535/draw).
+//   * Vertex-stage textureLod fetch is the only way to feed ≥100k per-splat attributes
+//     (uniform arrays can't). A helper cannot take a `sampler2d` argument in matc — the
+//     fetch is INLINED (spike finding 1).
+//   * mulMat4x4Float3(m, v) returns a float4 (homogeneous) — take .xyz (spike finding 2).
+//   * blending:transparent composites ONE*src + (1-a)*dst and does NOT premultiply unlit
+//     baseColor for us, so the fragment premultiplies `baseColor.rgb *= a` — the #2224 /
+//     #2325 wash-out lesson applies verbatim.
+//   * depthWrite off + depthCulling on: gaussians read the opaque depth buffer (so solid
+//     geometry occludes them) but do not write depth among themselves — correct alpha
+//     compositing relies on the CPU back-to-front instance order, not the z-buffer.
+material {
+    "name" : "Splat",
+
+    "parameters" : [
+        {
+            "type" : "sampler2d",
+            "name" : "splatPositionScale",
+            "format" : "float",
+            "precision" : "high"
+        },
+        {
+            "type" : "sampler2d",
+            "name" : "splatColorOpacity",
+            "format" : "float"
+        },
+        {
+            "type" : "sampler2d",
+            "name" : "splatAxisScale",
+            "format" : "float",
+            "precision" : "high"
+        },
+        {
+            "type" : "sampler2d",
+            "name" : "splatRotation",
+            "format" : "float",
+            "precision" : "high"
+        },
+        {
+            "type" : "int",
+            "name" : "texWidth"
+        },
+        {
+            "type" : "int",
+            "name" : "instanceOffset"
+        }
+    ],
+    "requires" : [
+        "position"
+    ],
+    "variables" : [
+        "quadUv",
+        "splatColor"
+    ],
+    "shadingModel" : "unlit",
+    "blending" : "transparent",
+    "instanced" : true,
+    "doubleSided" : true,
+    "depthWrite" : false,
+    "depthCulling" : true
+}
+vertex {
+    highp float3 rotateAxis(highp float4 q, highp float3 v) {
+        highp float3 t = 2.0 * cross(q.xyz, v);
+        return v + q.w * t + cross(q.xyz, t);
+    }
+
+    highp float2 projectAxis(highp float3 axis, highp float2 ray) {
+        return axis.xy + ray * axis.z;
+    }
+
+    void materialVertex(inout MaterialVertexInputs material) {
+        int idx = getInstanceIndex() + materialParams.instanceOffset;
+        int tw = materialParams.texWidth;
+        // Texel centre of splat `idx` in the square data textures.
+        highp float2 uv = (float2(float(idx % tw), float(idx / tw)) + 0.5) / float(tw);
+
+        // Per-splat attributes (inlined fetch — samplers can't be helper args under matc).
+        highp float4 posScale = textureLod(materialParams_splatPositionScale, uv, 0.0);
+        float4 col = textureLod(materialParams_splatColorOpacity, uv, 0.0);
+
+        highp mat4 model = getWorldFromModelMatrix();
+        highp mat4 view = getViewFromWorldMatrix();
+        highp float3 center = (model * float4(posScale.xyz, 1.0)).xyz;
+        highp float3 viewCenter = (view * float4(center, 1.0)).xyz;
+        highp float depth = -viewCenter.z;
+        highp float2 corner = getPosition().xy;
+        highp float3 scales = textureLod(materialParams_splatAxisScale, uv, 0.0).xyz;
+        highp float4 q = textureLod(materialParams_splatRotation, uv, 0.0);
+        if (depth <= 0.0 || dot(q, q) == 0.0) {
+            material.worldPosition = float4(center, 1.0);
+            material.quadUv = float4(0.0);
+            material.splatColor = float4(0.0);
+            return;
+        }
+        q = normalize(q);
+        highp mat3 viewFromModel = mat3(view) * mat3(model);
+        // Perspective Jacobian without focal/depth scaling: the camera plane
+        // offset below is projected by Filament at the same centre depth.
+        highp float2 ray = viewCenter.xy / depth;
+        highp float2 x = projectAxis(viewFromModel * rotateAxis(q, float3(scales.x, 0.0, 0.0)), ray);
+        highp float2 y = projectAxis(viewFromModel * rotateAxis(q, float3(0.0, scales.y, 0.0)), ray);
+        highp float2 z = projectAxis(viewFromModel * rotateAxis(q, float3(0.0, 0.0, scales.z)), ray);
+
+        // Cholesky factor of the 2D covariance maps a unit Gaussian to the
+        // projected ellipse. A subpixel variance floor keeps thin axes stable.
+        highp mat4 projection = getClipFromViewMatrix();
+        highp float2 pixel = (2.0 * depth) / (getResolution().xy * abs(float2(projection[0][0], projection[1][1])));
+        highp float2 variance = 0.3 * pixel * pixel;
+        highp float a = x.x*x.x + y.x*y.x + z.x*z.x + variance.x;
+        highp float b = x.x*x.y + y.x*y.y + z.x*z.y;
+        highp float c = x.y*x.y + y.y*y.y + z.y*z.y + variance.y;
+        highp float l00 = sqrt(a);
+        highp float l10 = b / l00;
+        highp float l11 = sqrt(max(c - l10*l10, variance.y));
+        highp float2 offset = 3.0 * float2(l00 * corner.x, l10 * corner.x + l11 * corner.y);
+        highp float3 camRight = float3(view[0][0], view[1][0], view[2][0]);
+        highp float3 camUp = float3(view[0][1], view[1][1], view[2][1]);
+        material.worldPosition = float4(center + offset.x * camRight + offset.y * camUp, 1.0);
+
+        // Custom material `variables` are float4 interpolants — pad the float2 corner.
+        material.quadUv = float4(corner, 0.0, 0.0);
+        material.splatColor = col;
+    }
+}
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+
+        // The vertex shader maps the unit Gaussian to a 3-sigma ellipse.
+        float2 uv = variable_quadUv.xy;
+        float g = exp(-0.5 * dot(uv, uv) * 9.0);
+        float a = variable_splatColor.a * g;
+
+        // #2224 / #2325 — premultiply. blending:transparent composites ONE*src + (1-a)*dst,
+        // so the emitted rgb must already be alpha-weighted for a correct radiance-field blend.
+        material.baseColor = float4(variable_splatColor.rgb * a, a);
+    }
+}

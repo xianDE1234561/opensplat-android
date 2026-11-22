@@ -1,0 +1,125 @@
+diff --git a/locusgs/models/locusgs.py b/locusgs/models/locusgs.py
+index 8169e58..1cbd57d 100644
+--- a/locusgs/models/locusgs.py
++++ b/locusgs/models/locusgs.py
+@@ -403,6 +403,80 @@ class LocusGS(nn.Module):
+             return gaussians, attn_maps
+         return gaussians
+ 
++    def decode_tokens(
++        self,
++        encoder_latent: "EncoderLatent",
++        gs_tokens: Optional[torch.Tensor] = None,
++    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
++        """Decoder without the Gaussian head: tokens plus the anchor state.
++
++        ``forward_decoder`` ends by calling the activation head and then
++        ``compose_gaussian_xyz`` with the refined anchors. Exposing the tokens
++        and anchors separately keeps that final composition explicit, which is
++        what allows the model to be split into exportable graphs and lets the
++        caller recompose exactly the same Gaussians.
++
++        Returns ``(gs_tokens, gs_anchor_raw, gs_anchor_radius)``; the anchor
++        radius is ``None`` when ``use_anchor_radius`` is false.
++
++        Cameras are deliberately not an input: Gaussian decoding is
++        view-independent in this architecture, and ``forward_decoder`` never
++        reads ``decoder_input``. Cameras only matter when rendering.
++        """
++        B = encoder_latent.keys.shape[0]
++        if gs_tokens is None:
++            gs_tokens = self.get_gs_tokens(batch_size=B)
++
++        gs_anchor_raw = self.gs_anchor_xyz_raw.unsqueeze(0).repeat(B, 1, 1)
++        gs_anchor_radius_raw = (
++            self.gs_anchor_radius_raw.unsqueeze(0).repeat(B, 1, 1)
++            if self.opt.use_anchor_radius
++            else None
++        )
++        gs_anchor_radius = (
++            self.activate_anchor_radius(gs_anchor_radius_raw)
++            if gs_anchor_radius_raw is not None
++            else None
++        )
++
++        for layer in self.enc_dec_backbone.decoder_blocks:
++            gs_tokens = layer(
++                gs_tokens=gs_tokens,
++                gs_anchor_normalized=self.normalize_anchor(gs_anchor_raw),
++                gs_anchor_radius=gs_anchor_radius if self.opt.anchor_radius_affects_bias else None,
++                keys=encoder_latent.keys,
++                values=encoder_latent.values,
++                plucker_emb_for_concat=encoder_latent.plucker_emb_for_concat,
++                plucker_rays_patch_raw=encoder_latent.plucker_rays_patch_raw,
++                gs_anchor_raw=gs_anchor_raw,
++                handcraft=self.opt.cross_attn_handcraft,
++                return_attn=False,
++            )
++            delta_raw = self.activation_head.pos_act(self.xyz_embed(gs_tokens))
++            gs_anchor_raw = gs_anchor_raw + delta_raw
++            if self.opt.anchor_radius_refinement:
++                delta_radius_raw = self.radius_embed(gs_tokens)
++                gs_anchor_radius_raw = gs_anchor_radius_raw + delta_radius_raw
++                gs_anchor_radius = self.activate_anchor_radius(gs_anchor_radius_raw)
++
++        return gs_tokens, gs_anchor_raw, gs_anchor_radius
++
++    def gaussians_from_tokens(
++        self,
++        gs_tokens: torch.Tensor,
++        gs_anchor_raw: torch.Tensor,
++        gs_anchor_radius: Optional[torch.Tensor],
++    ) -> torch.Tensor:
++        """Activation head + anchor composition: tokens -> ``[B, N, 14]``."""
++        gaussians = self.activation_head(gs_tokens)
++        num_gaussians_per_token = self.activation_head.num_gaussians_per_token
++        gaussians_xyz = gaussians[..., :3]
++        gaussians_rest = gaussians[..., 3:]
++        gaussians_xyz = self.compose_gaussian_xyz(
++            gaussians_xyz, gs_anchor_raw, gs_anchor_radius, num_gaussians_per_token
++        )
++        return torch.cat([gaussians_xyz, gaussians_rest], dim=-1)
++
+     def render_gaussians(self, gaussians: torch.Tensor, decoder_input: ModelInputDecoder) -> dict:
+         """
+         Render Gaussians to images.
+diff --git a/locusgs/rendering/fused_ssim.py b/locusgs/rendering/fused_ssim.py
+index 16a72a8..c030943 100644
+--- a/locusgs/rendering/fused_ssim.py
++++ b/locusgs/rendering/fused_ssim.py
+@@ -19,12 +19,29 @@ Original fused_ssim doesn't support vmap. This version provides re-wraps their C
+ 
+ import torch
+ 
+-if torch.cuda.is_available():
+-    from fused_ssim_cuda import fusedssim, fusedssim_backward
+-elif torch.mps.is_available():
+-    from fused_ssim_mps import fusedssim, fusedssim_backward
+-elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+-    from fused_ssim_xpu import fusedssim, fusedssim_backward
++# The fused CUDA extension is only used by the training SSIM loss. Inference
++# (forward + gsplat render) must not require it, so the import is optional and
++# fails at call time instead of at module import time. See INTEGRATION_AUDIT.md.
++_FUSED_SSIM_IMPORT_ERROR: Exception | None = None
++try:
++    if torch.cuda.is_available():
++        from fused_ssim_cuda import fusedssim, fusedssim_backward
++    elif torch.mps.is_available():
++        from fused_ssim_mps import fusedssim, fusedssim_backward
++    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
++        from fused_ssim_xpu import fusedssim, fusedssim_backward
++    else:
++        raise ImportError("no fused SSIM backend available")
++except Exception as _exc:  # pragma: no cover - depends on optional build
++    _FUSED_SSIM_IMPORT_ERROR = _exc
++
++    def fusedssim(*args, **kwargs):
++        raise RuntimeError(
++            "fused_ssim is unavailable in this environment "
++            f"({_FUSED_SSIM_IMPORT_ERROR}); install fused-ssim to use SSIM training loss"
++        )
++
++    fusedssim_backward = fusedssim
+ 
+ 
+ allowed_padding = ["same", "valid"]

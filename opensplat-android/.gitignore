@@ -1,0 +1,50 @@
+# ── IDE & OS ──────────────────────────────────────────────
+*.iml
+.DS_Store
+Thumbs.db
+Desktop.ini
+/.idea
+.kotlin
+.vscode/
+
+# ── Gradle ────────────────────────────────────────────────
+/local.properties
+/.gradle
+/build
+/captures
+.externalNativeBuild
+.cxx
+samples/*/build/
+sceneview/build/
+arsceneview/build/
+sceneview-core/build/
+
+# ── Android artifacts ─────────────────────────────────────
+*.apk
+*.aab
+
+# Auto-generated demo registry
+samples/android-demo/src/main/java/io/github/sceneview/demo/fragments/GeneratedDemos.kt
+
+# ── Environment & secrets ─────────────────────────────────
+.env
+.env.local
+.secrets/
+**/*.keystore
+**/*.jks
+**/google-services.json
+
+# ── Large media & local test recordings ───────────────────
+/video/
+samples/android-demo/src/androidTest/assets/ar-recordings/*.mp4
+
+# ── Python virtual environments ───────────────────────────
+.venv/
+.venv
+__pycache__/
+*.pyc
+
+# ── Sync conflict files ───────────────────────────────────
+**/* (1)*
+**/* (2)*
+**/* (3)*

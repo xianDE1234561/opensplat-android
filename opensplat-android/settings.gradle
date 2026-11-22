@@ -1,0 +1,41 @@
+pluginManagement {
+    buildscript {
+        repositories {
+            mavenCentral()
+            google()
+            maven { url = uri("https://storage.googleapis.com/r8-releases/raw") }
+        }
+        dependencies {
+            classpath("com.android.tools:r8:9.1.29")
+        }
+    }
+    repositories {
+        mavenCentral()
+        gradlePluginPortal()
+        google {
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("com\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        mavenLocal()
+        mavenCentral()
+        google()
+    }
+}
+rootProject.name = "SceneView"
+include ":sceneview-core"
+include ":sceneview"
+include ":arsceneview"
+
+// Android Splat sample app
+include ":samples:common"
+include ":samples:android-demo"
+
