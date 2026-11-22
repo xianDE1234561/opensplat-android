@@ -10,17 +10,10 @@ import io.github.sceneview.demo.service.SplatTrainingService
 import java.io.File
 
 /**
- * Headless Brush warm-start, driven by adb.
- *
- *     adb shell am start -n io.github.sceneview.demo/.locusgs.BrushTrainingActivity \
- *         --es bundle /sdcard/Download/dev_bundle.zip --ei iters 200
- *
- * Starts [SplatTrainingService] from inside the app, so the service's
- * `exported=false` stays intact -- only this debug entry point is exported.
- *
- * The bundle must contain `init.ply`; Brush looks that name up explicitly
- * (`crates/brush-dataset/src/formats/mod.rs`), which is what turns the run into
- * a warm start instead of a random initialisation.
+ * ADB entry point for paired ZIP training through the same service as the UI.
+ * Extras: bundle, iters, export_name, initialization (existing/direct),
+ * frame_selection (original/coverage; selects a supplied paired ZIP), seed (long).
+ * Existing bundles keep Brush's native initialization; Direct adds PR PocketGS init.ply.
  */
 class BrushTrainingActivity : Activity() {
     companion object {
@@ -54,10 +47,13 @@ class BrushTrainingActivity : Activity() {
         SplatTrainingService.start(
             context = applicationContext,
             totalIterations = iters,
-            datasetName = "truck",
+            datasetName = f.name,
+            initialization = intent.getStringExtra("initialization") ?: "existing",
+            frameSelection = intent.getStringExtra("frame_selection") ?: "original",
+            trainingSeed = intent.getLongExtra("seed", 42L),
             datasetPath = bundlePath,
             exportName = exportName,
-            splatId = "ws_$iters",
+            splatId = exportName,
         )
     }
 }

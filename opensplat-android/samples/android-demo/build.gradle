@@ -42,7 +42,7 @@ android {
 
 
     defaultConfig {
-        applicationId "io.github.sceneview.demo"
+        applicationId "io.github.sceneview.demo.fusion"
         minSdk 31
         targetSdk 36
         versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 1
@@ -56,6 +56,12 @@ android {
                 cppFlags "-std=c++17"
                 arguments "-DANDROID_STL=c++_shared", "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384"
                 targets "splat_capture_jni"
+                if (project.hasProperty('nativeDeps')) {
+                    ['TFLITE_HEADERS', 'OPENCV_MOBILE', 'EIGEN', 'CERES'].each { dep ->
+                        arguments "-DFETCHCONTENT_SOURCE_DIR_${dep}=" + project.property('nativeDeps') + '/' + dep.toLowerCase() + '-src'
+                    }
+                }
+
             }
         }
 

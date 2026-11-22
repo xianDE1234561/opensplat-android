@@ -68,6 +68,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -409,6 +410,29 @@ private fun LocalTrainingContent(
         Spacer(modifier = Modifier.height(20.dp))
 
         // Sync Iterations Input (Slider + Text Box)
+        Text("Initialization")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for ((value, label) in listOf("existing" to "Existing", "direct" to "Direct · PocketGS")) {
+                FilterChip(selected = SplatTrainingStateHolder.initialization == value,
+                    onClick = { SplatTrainingStateHolder.initialization = value },
+                    enabled = !isTraining, label = { Text(label) })
+            }
+        }
+        Text("Frame selection (import the matching paired ZIP)")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (value in listOf("original", "coverage")) {
+                FilterChip(selected = SplatTrainingStateHolder.frameSelection == value,
+                    onClick = { SplatTrainingStateHolder.frameSelection = value },
+                    enabled = !isTraining, label = { Text(value) })
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (steps in listOf(1000, 1500, 2000)) {
+                FilterChip(selected = iterationsInput == steps.toString(),
+                    onClick = { iterationsInput = steps.toString() },
+                    enabled = !isTraining, label = { Text("$steps") })
+            }
+        }
         Text(
             text = stringResource(R.string.demo_splat_training_iterations),
             style = MaterialTheme.typography.titleMedium,

@@ -51,9 +51,15 @@ class SplatTrainingService : Service() {
             exportName: String,
             splatId: String,
             warmStartCount: Int? = null,
+            initialization: String = "existing",
+            frameSelection: String = "original",
+            trainingSeed: Long = 42L,
         ) {
             val intent = Intent(context, SplatTrainingService::class.java).apply {
                 action = ACTION_START_TRAINING
+                putExtra("initialization", initialization)
+                putExtra("frame_selection", frameSelection)
+                putExtra("seed", trainingSeed)
                 putExtra("total", totalIterations)
                 putExtra("dataset_name", datasetName)
                 putExtra("dataset_path", datasetPath)
@@ -88,6 +94,16 @@ class SplatTrainingService : Service() {
     private var exportName: String = "model.ply"
     private var splatId: String = ""
     private var warmStartCount = 0
+    private var initialization = "existing"
+    private var frameSelection = "original"
+    private var trainingSeed = 42L
+    private val report = org.json.JSONObject()
+    private var startedNs = 0L
+    private var engineNs = 0L
+    private fun saveReport(status: String) {
+        report.put("status", status).put("wall_ms", (System.nanoTime() - startedNs) / 1_000_000)
+        File(filesDir, "$exportName.report.json").writeText(report.toString(2))
+    }
     private val lifetime = Binder()
     private var lastNotificationUpdateMs = 0L
 
@@ -163,6 +179,13 @@ class SplatTrainingService : Service() {
                 exportName = intent.getStringExtra("export_name") ?: "model.ply"
                 splatId = intent.getStringExtra(EXTRA_SPLAT_ID) ?: ""
                 warmStartCount = intent.getIntExtra(EXTRA_WARM_START_COUNT, 0)
+                initialization = intent.getStringExtra("initialization") ?: "existing"
+                frameSelection = intent.getStringExtra("frame_selection") ?: "original"
+                trainingSeed = intent.getLongExtra("seed", 42L)
+                startedNs = System.nanoTime()
+                report.put("initialization", initialization).put("frame_selection", frameSelection)
+                    .put("seed", trainingSeed).put("steps", totalIterations).put("dataset", datasetName)
+                    .put("evaluations", org.json.JSONArray())
                 val datasetPath = intent.getStringExtra("dataset_path") ?: ""
 
                 val notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -197,6 +220,8 @@ class SplatTrainingService : Service() {
             override fun onProgress(iter: Int, total: Int, elapsedMs: Long) {
                 if (isStopped) return
 
+                report.put("iteration", iter).put("engine_elapsed_ms", elapsedMs)
+                if (iter % 100 == 0 || iter >= total) saveReport("training")
                 val now = System.currentTimeMillis()
                 if (now - lastNotificationUpdateMs >= 500L || iter >= total) {
                     lastNotificationUpdateMs = now
@@ -216,6 +241,9 @@ class SplatTrainingService : Service() {
 
             override fun onEvalResult(iter: Int, psnr: Float, ssim: Float) {
                 if (isStopped) return
+                report.getJSONArray("evaluations").put(org.json.JSONObject()
+                    .put("iteration", iter).put("psnr", psnr).put("ssim", ssim))
+                saveReport("evaluating")
                 val evalIntent = Intent(BROADCAST_TRAINING_EVAL).apply {
                     setPackage(packageName)
                     putExtra(EXTRA_SPLAT_ID, splatId)
@@ -228,12 +256,18 @@ class SplatTrainingService : Service() {
             override fun onTrainingComplete() {
                 if (isStopped) return
                 Log.i(TAG, "Native Brush training completed.")
+                report.put("engine_wall_ms", (System.nanoTime() - engineNs) / 1_000_000)
+                    .put("ply_bytes", File(filesDir, exportName).length())
+                saveReport("complete")
 
                 val completeIntent = Intent(BROADCAST_TRAINING_COMPLETE).apply {
                     setPackage(packageName)
                     putExtra("export_name", exportName)
                     putExtra("dataset_name", datasetName)
-                    putExtra("total", totalIterations)
+                    putExtra("initialization", initialization)
+                putExtra("frame_selection", frameSelection)
+                putExtra("seed", trainingSeed)
+                putExtra("total", totalIterations)
                     putExtra(EXTRA_SPLAT_ID, splatId)
                 }
                 sendBroadcast(completeIntent)
@@ -249,9 +283,31 @@ class SplatTrainingService : Service() {
                 if (!datasetFile.exists() || datasetFile.length() == 0L) {
                     throw IllegalStateException("Dataset archive not found or empty at: $datasetPath")
                 }
-                val datasetUri = Uri.fromFile(datasetFile)
+                require(initialization in listOf("existing", "direct"))
+                report.put("source_bytes", datasetFile.length()).put("source_sha256",
+                    java.security.MessageDigest.getInstance("SHA-256").let { md ->
+                        datasetFile.inputStream().use { stream ->
+                            val buffer = ByteArray(65536)
+                            while (true) { val n = stream.read(buffer); if (n < 0) break; md.update(buffer, 0, n) }
+                        }
+                        md.digest().joinToString("") { "%02x".format(it) }
+                    })
+                val initStart = System.nanoTime()
+                val prepared = if (initialization == "direct") {
+                    val initial = File(filesDir, "$exportName.init.ply")
+                    val bundle = File(cacheDir, "$exportName.direct.zip")
+                    val count = io.github.sceneview.demo.locusgs.ZipTrainingInit.prepare(this, datasetFile, initial, bundle)
+                    report.put("initial_points", count).put("initial_ply_bytes", initial.length())
+                    bundle
+                } else datasetFile
+                report.put("initialization_ms", (System.nanoTime() - initStart) / 1_000_000)
+                val datasetUri = Uri.fromFile(prepared)
                 val config = BrushConfig().apply {
                     totalTrainIters = totalIterations
+                    seed = trainingSeed
+                    evalEvery = totalIterations
+                    evalSaveToDisk = true
+                    exportEvery = totalIterations
                     exportName = this@SplatTrainingService.exportName
                     if (warmStartCount > 0) {
                         // The supplied SH0 and geometry are trainable; don't change topology.
@@ -266,9 +322,13 @@ class SplatTrainingService : Service() {
                     }
                 }
                 Log.i(TAG, "Starting BrushEngine native execution: iters=$totalIterations, export=$exportName")
+                engineNs = System.nanoTime()
+                saveReport("starting_engine")
                 BrushEngine.start(applicationContext, datasetUri, config)
             } catch (t: Throwable) {
                 Log.e(TAG, "Error in native BrushEngine execution", t)
+                report.put("error", Log.getStackTraceString(t))
+                saveReport("failed")
                 if (!isStopped) {
                     val errorIntent = Intent(BROADCAST_TRAINING_ERROR).apply {
                         setPackage(packageName)

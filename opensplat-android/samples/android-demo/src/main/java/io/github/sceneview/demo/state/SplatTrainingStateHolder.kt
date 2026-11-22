@@ -38,6 +38,8 @@ object SplatTrainingStateHolder {
     var datasetUri by mutableStateOf<Uri?>(null)
     var datasetName by mutableStateOf<String?>(null)
     var iterationsInput by mutableStateOf("1000")
+    var initialization by mutableStateOf("existing")
+    var frameSelection by mutableStateOf("original")
 
     var isTraining by mutableStateOf(false)
     var currentIteration by mutableIntStateOf(0)
@@ -213,6 +215,8 @@ object SplatTrainingStateHolder {
                         datasetName = sanitizedDataset,
                         datasetPath = tempFile.absolutePath,
                         exportName = uniqueExportName,
+                        initialization = initialization,
+                        frameSelection = frameSelection,
                         splatId = activeSplatId ?: timestamp.toString()
                     )
                 }
